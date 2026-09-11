@@ -200,9 +200,15 @@ class ActionRecognitionAnalyzer(TaskAnalyzer):
 
     # -- feature distillation ---------------------------------------------
     def features(self, x: torch.Tensor) -> list:
-        """Frozen r3d_18 semantic features (stem, layer1, layer2) for distill."""
+        """Frozen r3d_18 semantic features (stem, layer1, layer2) for distill.
+
+        ptv backbones return [] — feature_distillation's contract is "no
+        features -> 0 loss" (omega is 0 in Zhao-pure configs anyway; the
+        earlier NotImplementedError broke the unconditional call at
+        losses.py:265 and killed the first train step).
+        """
         if self.is_ptv:
-            raise NotImplementedError("feature distill unused for Zhao arms")
+            return []
         h = self._prep(x)
         net = self.net
         feats = []
