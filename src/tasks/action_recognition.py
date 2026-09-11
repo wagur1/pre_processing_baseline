@@ -56,12 +56,14 @@ def _build_ptv(name: str, clip_size: int):
     import json as _json
     import urllib.request as _url
     try:
-        from pytorchvideo.models.hub import slowonly_r50, slowfast_r50
+        # NOTE: pytorchvideo's hub exports SlowOnly R50 as `slow_r50`
+        # (there is no slowonly_r50 symbol — the first push died on this).
+        from pytorchvideo.models.hub import slow_r50, slowfast_r50
     except ImportError as e:
         raise ImportError(
             "Zhao backbones need pytorchvideo (pip install pytorchvideo)") from e
     if name == "slowonly":
-        net = slowonly_r50(pretrained=True)
+        net = slow_r50(pretrained=True)
     elif name == "slowfast":
         net = slowfast_r50(pretrained=True)
     else:
