@@ -20,6 +20,9 @@ from functools import lru_cache
 from typing import Any, Dict, List, Tuple
 
 import torch
+import json as _json
+from pathlib import Path
+
 import torch.nn.functional as F
 from torchvision.models.video import (
     mc3_18,
@@ -72,25 +75,36 @@ def _build_ptv(name: str, clip_size: int):
     for p in net.parameters():
         p.requires_grad_(False)
 
+    # ptv heads ship with AvgPool3d kernels sized for 8x224x224 inputs; our
+    # clips are 16x112x112 -> the pool kernel no longer fits (first Zhao push
+    # crashed here). Global average is the same op at any size, and pools have
+    # no learned parameters, so swap every AvgPool3d in the head for an
+    # adaptive one.
+    import torch.nn as _nn
+    head = getattr(net, "head", None)
+    if head is not None:
+        for attr in dir(head):
+            if attr.startswith("_"):
+                continue
+            mod = getattr(head, attr)
+            if isinstance(mod, _nn.AvgPool3d):
+                setattr(head, attr, _nn.AdaptiveAvgPool3d(1))
+                print(f"[ptv] head.{attr} -> AdaptiveAvgPool3d(1)")
+
+    # Permutation: measured empirically by ops/ptv_perm_probe.py (512 raw
+    # train clips, Hungarian assignment on slow-vs-r3d_18 argmax agreement)
+    # and stored in data/ptv_perm.json. The tutorial's kinetics_classnames
+    # json is gone from the internet — the file IS the source of truth now.
     perm = torch.arange(400)
+    perm_path = Path(__file__).resolve().parents[2] / "data" / "ptv_perm.json"
     try:
-        raw = _url.urlopen(
-            "https://raw.githubusercontent.com/facebookresearch/pytorchvideo/"
-            "main/pytorchvideo/data/kinetics_classnames.json", timeout=20).read()
-        ptv_names = _json.loads(raw)              # {"class name": ptv_idx}
-        tv_names = list(R3D_18_Weights.KINETICS400_V1.meta["categories"])
-        canon = {c: i for i, c in enumerate(tv_names)}
-        perm = torch.arange(400)
-        ok = 0
-        for cname, ptv_idx in ptv_names.items():
-            key = _canon(cname)
-            if key in canon:
-                perm[ptv_idx] = canon[key]
-                ok += 1
-        print(f"[ptv] class permutation built: {ok}/400 mapped")
-    except Exception as e:
-        print(f"[ptv] WARN classnames fetch failed ({e}); identity permutation "
-              "— check anchor accuracy sanity!")
+        perm = torch.tensor(_json.loads(perm_path.read_text()), dtype=torch.long)
+        if perm.shape != (400,) or (perm.sort().values != torch.arange(400)).any():
+            raise ValueError("not a valid permutation of 0..399")
+        print(f"[ptv] permutation loaded from data/ptv_perm.json")
+    except FileNotFoundError:
+        print("[ptv] FATAL data/ptv_perm.json missing — run ops/ptv_perm_probe.py")
+        raise
     return net, perm
 
 # Kinetics normalisation used by torchvision video weights.
