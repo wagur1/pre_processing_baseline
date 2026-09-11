@@ -46,12 +46,14 @@ root = "/".join(sample.split("/")[:-2])
 print("[probe] kinetics root:", root)
 
 import subprocess as _sp  # noqa: E402
+REPO = "/kaggle/working/pre_processing_baseline"
+INDEX = REPO + "/data/index/kinetics_hash_split.json"
 _sp.run([sys.executable, "scripts/build_train_index.py", "--root", root,
-         "--out", "data/index/kinetics_hash_split.json",
+         "--out", INDEX,
          "--assert-fingerprint", "30f083f8520a"], check=True,
-        cwd="/kaggle/working/pre_processing_baseline")
+        cwd=REPO)
 
-ds = VideoClipDataset("data/index/kinetics_hash_split.json", split="train",
+ds = VideoClipDataset(INDEX, split="train",
                       num_frames=16, frame_size=128, temporal_stride=2,
                       train=False)
 print("[probe] train clips:", len(ds))
@@ -72,11 +74,30 @@ def prep(x, t=16):
 
 # torchvision reference
 tv = r3d_18(weights=R3D_18_Weights.KINETICS400_V1).to(DEV).eval()
-# ptv models
-slow = slow_r50(pretrained=True).to(DEV).eval()
+# ptv models — with the same head-pool fix as action_recognition.py:
+# shipped AvgPool3d(8,7,7) expects 8x224x224; our clips are 16x112x112.
+import torch.nn as _nn
+def _fix_pool(net, tag):
+    n = 0
+    def rec(mod):
+        nonlocal n
+        for name, ch in mod.named_children():
+            if isinstance(ch, _nn.AvgPool3d) and any(k > 1 for k in ch.kernel_size):
+                setattr(mod, name, _nn.AdaptiveAvgPool3d(1))
+                n += 1
+            else:
+                rec(ch)
+    rec(net)
+    print(f"[probe] {tag}: {n} AvgPool3d -> AdaptiveAvgPool3d(1)")
+
+slow = slow_r50(pretrained=True)
+_fix_pool(slow, "slow_r50")
+slow = slow.to(DEV).eval()
 sf = None
 try:
-    sf = slowfast_r50(pretrained=True).to(DEV).eval()
+    sf = slowfast_r50(pretrained=True)
+    _fix_pool(sf, "slowfast_r50")
+    sf = sf.to(DEV).eval()
 except Exception as e:
     print("[probe] slowfast load failed:", e)
 
@@ -93,7 +114,7 @@ with torch.no_grad():
         s_logits = slow(x)[0].cpu()
         if sf is not None:
             x64 = x.repeat_interleave(4, dim=2)
-            sf_logits = sf(x64)[0].cpu()
+            sf_logits = sf([x, x64])[0].cpu()  # slowfast needs a LIST
         tp = tv_logits.argmax().item()
         sp = s_logits.argmax().item()
         A_slow[sp, tp] += 1

@@ -75,21 +75,22 @@ def _build_ptv(name: str, clip_size: int):
     for p in net.parameters():
         p.requires_grad_(False)
 
-    # ptv heads ship with AvgPool3d kernels sized for 8x224x224 inputs; our
-    # clips are 16x112x112 -> the pool kernel no longer fits (first Zhao push
-    # crashed here). Global average is the same op at any size, and pools have
-    # no learned parameters, so swap every AvgPool3d in the head for an
-    # adaptive one.
+    # ptv ships head AvgPool3d((8,7,7)) sized for 8x224x224 inputs; our
+    # 16x112x112 clips reduce feature maps to T16 H4 W4 -> the fixed kernel
+    # no longer fits (the Net is blocks-based, the pool lives at
+    # blocks[5].pool — an earlier .head-based fix silently missed it).
+    # Replace RECURSIVELY; global average is the same op, pools carry no
+    # learned parameters. Verified locally: forward 16x112 -> [B,400].
     import torch.nn as _nn
-    head = getattr(net, "head", None)
-    if head is not None:
-        for attr in dir(head):
-            if attr.startswith("_"):
-                continue
-            mod = getattr(head, attr)
-            if isinstance(mod, _nn.AvgPool3d):
-                setattr(head, attr, _nn.AdaptiveAvgPool3d(1))
-                print(f"[ptv] head.{attr} -> AdaptiveAvgPool3d(1)")
+
+    def _fix_pool(mod):
+        for _name, _ch in mod.named_children():
+            if isinstance(_ch, _nn.AvgPool3d) and any(k > 1 for k in _ch.kernel_size):
+                setattr(mod, _name, _nn.AdaptiveAvgPool3d(1))
+            else:
+                _fix_pool(_ch)
+
+    _fix_pool(net)
 
     # Permutation: measured empirically by ops/ptv_perm_probe.py (512 raw
     # train clips, Hungarian assignment on slow-vs-r3d_18 argmax agreement)
@@ -159,29 +160,33 @@ class ActionRecognitionAnalyzer(TaskAnalyzer):
         self.register_buffer("std", torch.tensor(_STD).view(1, 3, 1, 1, 1))
 
     # -- input prep --------------------------------------------------------
-    def _prep(self, x: torch.Tensor) -> torch.Tensor:
+    def _prep(self, x):
         """[B,C,T,H,W] in [0,1] -> resized to clip_size, Kinetics-normalised.
 
-        SlowFast additionally needs T=64 for the fast pathway: the 16-frame
-        clip is temporally upsampled (repeat each frame 4x keeps motion
-        periodicity intact for the fast branch's alpha=8 subsampling).
+        SlowFast (ptv) needs a LIST of two pathway tensors: slow (T=16) +
+        fast (T=64). The 16-frame clip is repeated 4x for the fast pathway
+        (keeps motion periodicity for the alpha=8 subsampling) — verified
+        locally: forward works and emits [B,400].
         """
         b, c, t, h, w = x.shape
-        if self.is_ptv and self.backbone_name == "slowfast" and t < 64:
-            rep = 64 // t
-            x = x.repeat_interleave(rep, dim=2)
-            t = x.shape[2]
-        if (h, w) != (self.clip_size, self.clip_size):
-            x = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
-            x = F.interpolate(
-                x,
-                size=(self.clip_size, self.clip_size),
-                mode="bilinear",
-                align_corners=False,
-            )
-            x = x.reshape(b, t, c, self.clip_size, self.clip_size)
-            x = x.permute(0, 2, 1, 3, 4)
-        return (x - self.mean) / self.std
+        slowfast = self.is_ptv and self.backbone_name == "slowfast"
+        if slowfast and t < 64:
+            fast = x.repeat_interleave(64 // t, dim=2)
+        else:
+            fast = x
+        def _resize(v):
+            tt = v.shape[2]
+            if (h, w) != (self.clip_size, self.clip_size):
+                v = v.permute(0, 2, 1, 3, 4).reshape(b * tt, c, h, w)
+                v = F.interpolate(
+                    v, size=(self.clip_size, self.clip_size),
+                    mode="bilinear", align_corners=False)
+                v = v.reshape(b, tt, c, self.clip_size, self.clip_size)
+                v = v.permute(0, 2, 1, 3, 4)
+            return (v - self.mean) / self.std
+        if slowfast:
+            return [_resize(x), _resize(fast)]
+        return _resize(x)
 
     # -- training ----------------------------------------------------------
     def accuracy_loss(
