@@ -78,7 +78,7 @@ def dataset_curves(seqs: dict) -> dict:
     for codec in CODECS:
         for method in (codec, f"prep+{codec}"):
             bpp_sum, correct, n = {}, {}, {}
-            for rec in seqs.values():
+            for rec in (seqs.values() if isinstance(seqs, dict) else seqs):
                 points = rec["codecs"].get(method)
                 if not points:
                     continue
@@ -144,7 +144,7 @@ def bootstrap(seqs: dict, n_boot: int, seed: int) -> dict:
         samples = []
         for _ in range(n_boot):
             pick = [rng.choice(ids) for _ in ids]
-            sub = {sid: seqs[sid] for sid in pick}
+            sub = [seqs[sid] for sid in pick]  # keep multiplicity
             c = dataset_curves(sub)
             a, p_ = c.get(codec), c.get(f"prep+{codec}")
             if not a or not p_ or len(a["bpp"]) < 4:
