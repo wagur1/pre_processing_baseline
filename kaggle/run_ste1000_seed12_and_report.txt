@@ -1,0 +1,86 @@
+%%bash
+set -euo pipefail
+
+REPO=/kaggle/working/pre_processing_upgrade_3
+if [[ -d "$REPO/.git" ]]; then
+    git -C "$REPO" pull --ff-only
+else
+    git clone https://github.com/wagur1/pre_processing_upgrade_3.git "$REPO"
+fi
+cd "$REPO"
+
+test -f kaggle/ablate_ste_steps.sh || {
+    echo "Missing kaggle/ablate_ste_steps.sh" >&2
+    exit 1
+}
+
+echo "Repo commit: $(git rev-parse --short HEAD)"
+
+# Seed 0 has already been run. Train Stage 1 and calibrate only new seeds.
+for seed in 1 2; do
+    echo "===== seed $seed: Stage 1 + STE 1000 ====="
+    SEED="$seed" \
+    STE_STEPS="1000" \
+    BASE_OUT="outputs/ste_steps_ablation/seed_${seed}" \
+    CLEAN_RUN=1 \
+    bash kaggle/ablate_ste_steps.sh
+done
+
+echo "===== aggregate all three 1000-step seeds ====="
+python - <<'PY'
+import json
+import math
+from pathlib import Path
+
+paths = [Path(f"outputs/ste_steps_ablation/seed_{s}/steps_1000/eval/results.json")
+         for s in (0, 1, 2)]
+pairs = ("prep+h264 vs h264", "prep+h265 vs h265")
+t975_df2 = 4.302652729
+rows = []
+
+for seed, path in enumerate(paths):
+    if not path.exists():
+        raise SystemExit(f"Missing result for seed {seed}: {path}")
+    result = json.loads(path.read_text(encoding="utf-8"))
+    rows.append(result)
+    print(f"seed {seed}: n_eval={result.get('n_eval')}")
+    for pair in pairs:
+        value = (result.get("bd_prep_gain") or {}).get(pair) or {}
+        rate, acc = value.get("bd_rate_pct"), value.get("bd_accuracy")
+        rate_s = f"{rate:+.3f}%" if rate is not None else "undefined"
+        acc_s = f"{acc:+.4f}" if acc is not None else "undefined"
+        print(f"  {pair:24s} BD-Rate {rate_s:>10s} | BD-Acc {acc_s}")
+
+summary = {"n_seeds": 3, "n_eval_each": [r.get("n_eval") for r in rows], "pairs": {}}
+
+for pair in pairs:
+    values = [(r.get("bd_prep_gain") or {}).get(pair) or {} for r in rows]
+    rates = [float(v["bd_rate_pct"]) for v in values if v.get("bd_rate_pct") is not None]
+    accs = [float(v["bd_accuracy"]) for v in values if v.get("bd_accuracy") is not None]
+
+    if len(rates) < 2 or len(accs) < 2:
+        summary["pairs"][pair] = {"bd_rate_pct": None, "bd_accuracy": None,
+                                   "n_valid_rate": len(rates), "n_valid_acc": len(accs)}
+        print(f"  {pair}: insufficient finite seed results; aggregate undefined")
+        continue
+
+    def stats(values):
+        mean = sum(values) / len(values)
+        sd = math.sqrt(sum((x - mean) ** 2 for x in values) / (len(values) - 1))
+        half = t975_df2 * sd / math.sqrt(len(values))
+        return {"mean": mean, "std": sd, "ci95": [mean - half, mean + half]}
+
+    summary["pairs"][pair] = {"bd_rate_pct": stats(rates), "bd_accuracy": stats(accs)}
+
+print("\n=== 1000-step aggregate across seeds 0,1,2 ===")
+for pair, value in summary["pairs"].items():
+    r, a = value["bd_rate_pct"], value["bd_accuracy"]
+    print(f"{pair:24s} BD-Rate {r['mean']:+.3f}% "
+          f"CI95 [{r['ci95'][0]:+.3f}%, {r['ci95'][1]:+.3f}%] "
+          f"| BD-Acc {a['mean']:+.4f} "
+          f"CI95 [{a['ci95'][0]:+.4f}, {a['ci95'][1]:+.4f}]")
+
+out = Path("outputs/ste_steps_ablation/aggregate_1000.json")
+out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+print(f"\n[report] wrote {out}")
+PY

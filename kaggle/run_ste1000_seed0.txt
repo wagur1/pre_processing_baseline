@@ -1,0 +1,37 @@
+%%bash
+set -euo pipefail
+
+REPO=/kaggle/working/pre_processing_upgrade_3
+if [[ -d "$REPO/.git" ]]; then
+    git -C "$REPO" pull --ff-only
+else
+    git clone https://github.com/wagur1/pre_processing_upgrade_3.git "$REPO"
+fi
+cd "$REPO"
+echo "Repo commit: $(git rev-parse --short HEAD)"
+
+# Self-contained seed-0 run: Stage 1 is trained here, so no local checkpoint
+# from a previous notebook/session is required. Evaluation uses all five QPs.
+SEED=0 \
+STE_STEPS=1000 \
+BASE_OUT=outputs/ste_steps_ablation/seed_0 \
+CLEAN_RUN=1 \
+bash kaggle/ablate_ste_steps.sh
+
+python - <<'PY'
+import csv, json
+from pathlib import Path
+
+out = Path("outputs/ste_steps_ablation/seed_0/steps_1000/eval")
+r = json.loads((out / "results.json").read_text(encoding="utf-8"))
+print("\n=== STE 1000 steps, seed 0 ===")
+for name, value in (r.get("bd_prep_gain") or {}).items():
+    rate, acc = value.get("bd_rate_pct"), value.get("bd_accuracy")
+    print(f"{name:28s} BD-Rate {rate:+.3f}% | BD-Acc {acc:+.4f}"
+          if rate is not None and acc is not None else f"{name:28s} undefined")
+seq = out / "sequence_bd_rate.json"
+if seq.exists():
+    report = json.loads(seq.read_text(encoding="utf-8"))
+    print(f"[per-sequence] {report['sequences_with_bd']}/{report['n_sequences']} videos have valid BD fits")
+    print(f"[per-sequence] files: {out/'sequence_points.csv'}, {out/'sequence_bd_rate.csv'}, {seq}")
+PY

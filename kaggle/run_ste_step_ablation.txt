@@ -1,0 +1,25 @@
+%%bash
+set -euo pipefail
+
+REPO=/kaggle/working/pre_processing_upgrade_3
+
+if [[ -d "$REPO/.git" ]]; then
+    git -C "$REPO" pull --ff-only
+else
+    git clone https://github.com/wagur1/pre_processing_upgrade_3.git "$REPO"
+fi
+
+cd "$REPO"
+
+test -f kaggle/ablate_ste_steps.sh || {
+    echo "Missing kaggle/ablate_ste_steps.sh after clone/pull" >&2
+    exit 1
+}
+
+echo "Repo commit: $(git rev-parse --short HEAD)"
+
+SEED=0 \
+STE_STEPS="400 1000" \
+BASE_OUT=outputs/ste_steps_ablation/seed_0 \
+CLEAN_RUN=1 \
+bash kaggle/ablate_ste_steps.sh

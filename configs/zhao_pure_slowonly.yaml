@@ -1,0 +1,79 @@
+# Zhao et al. (arXiv:2512.15331) PURE reproduction — backbone slowonly
+# Loss EXACTLY as Eq.(1): L = 10*(L_D + 0.001*L_R) + L_Acc
+# NO kappa bit-restrainer (that is our lineage addition), NO other penalty.
+# Single teacher = slowonly (Zhao trains one preprocessor per backbone).
+# Eval (this config): ON-TEACHER (Zhao-style — the arm that reproduces
+# their Table 1 claims). The fair arm re-evals the same checkpoint with
+# eval.held_out_backbone=r2plus1d_18 + CI + gap rule.
+device: auto
+out_dir: outputs/zhao_slowonly
+seed: 0
+task:
+  name: action_recognition
+  clip_size: 112
+  teachers: [slowonly]
+  teacher_sampling: sample
+  backbone: slowonly
+model:
+  arch: additive
+  temporal_frames: 8
+  edit_kind: residual
+  gate_area: 0.2
+  gate: false
+  base_ch: 16
+  res_scale: 1.0
+codec:
+  kind: virtual
+  qualities: [1, 2, 3, 5, 8]
+  block: 8
+  inter: true
+  colorspace: yuv420
+  chroma_step_scale: 2.0
+  step_coarse: 0.25
+  step_fine: 0.03
+  anneal: 1.0
+data:
+  index: data/index/kinetics_hash_split.json
+  num_frames: 16
+  frame_size: 128
+  temporal_stride: 2
+loss:
+  lam_task: 1.0
+  omega: 0.0
+  beta: 0.001     # Zhao lambda
+  tau: 0.0
+  delta: 0.0
+  gamma: 0.0
+  kappa: 0.0      # Zhao has NO bit-restrainer
+  kappa_t: 0.0
+  gamma_res: 0.0
+  mu: 10.0        # Zhao alpha
+  rho: 0.0
+  use_task_mask: false
+train:
+  epochs: 16
+  max_steps: null
+  reg_warmup_frac: 0.0
+  batch_size: 8
+  num_workers: 3
+  lr: 1.0e-4
+  clip_grad: 1.0
+  qp_list: [30, 35, 40, 45, 50]
+  qp_to_quality: {30: 8, 35: 5, 40: 3, 45: 2, 50: 1}
+  cosine: true
+  patience: 4
+  min_delta: 1.0e-4
+  val_qp_mode: all
+  val_max_batches: 5
+  resume: true
+  finetune: false
+eval:
+  split: test
+  include_proxy: false
+  per_sequence: true
+  batch_size: 4
+  num_workers: 2
+  # held_out_backbone intentionally UNSET -> on-teacher eval (Zhao's arm).
+  # Fair arm: eval.held_out_backbone=r2plus1d_18 override at eval time.
+  qp_list: [30, 35, 40, 45, 50]
+  preset: medium

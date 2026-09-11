@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+outputs/
+data/index/*.json
+ops/_push/*/notebook.ipynb
+ops/_push/*/kernel-metadata.json
+*.pth
