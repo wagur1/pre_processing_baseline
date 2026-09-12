@@ -56,6 +56,8 @@ def main():
     p.add_argument("--ckpt-dataset", default=None,
                    help="(eval/tto) dataset slug holding the checkpoint")
     p.add_argument("--no-gpu", action="store_true")
+    p.add_argument("--analyzer", choices=["heldout", "teacher"], default="heldout",
+                   help="(eval) heldout: r2plus1d_18 canonical; teacher: task.backbone (on-teacher)")
     p.add_argument("--accelerator", default=None,
                    help="e.g. NvidiaTeslaT4 (P100 sm_60 is INCOMPATIBLE with "
                         "Kaggle's preinstalled torch: no kernel image)")
@@ -81,6 +83,8 @@ def main():
         src = src.replace("__SHARD_ARGS__",
                           f"eval.shard_idx={a.shard_idx} eval.num_shards={a.num_shards}")
         src = src.replace("__SUFFIX__", f"shard{a.shard_idx}")
+        src = src.replace("__HELD_OUT__",
+                          "eval.held_out_backbone=r2plus1d_18" if a.analyzer == "heldout" else "")
     elif a.kind == "tto":
         src = TTO_BASH.replace("__COMMIT__", commit)
     else:

@@ -74,7 +74,7 @@ python evaluate.py --config __CONFIG__ \
     --ckpt "$CKPT_SRC" \
     --out "$OUT" \
     data.index="$INDEX" \
-    eval.held_out_backbone=r2plus1d_18 \
+    __HELD_OUT__ \
     $SHARD_ARGS
 
 echo "[eval] done"
@@ -90,14 +90,19 @@ def main():
     p.add_argument("--config", default="configs/upvcm_ar.yaml")
     p.add_argument("--shard-idx", type=int, required=True)
     p.add_argument("--num-shards", type=int, default=3)
+    p.add_argument("--analyzer", choices=["heldout", "teacher"], default="heldout",
+                   help="heldout: eval.held_out_backbone=r2plus1d_18 (canonical); "
+                        "teacher: no override -> task.backbone (on-teacher, Zhao's arm)")
     a = p.parse_args()
 
     shard_args = f"eval.shard_idx={a.shard_idx} eval.num_shards={a.num_shards}"
+    held_out = "eval.held_out_backbone=r2plus1d_18" if a.analyzer == "heldout" else ""
     bash = (
         EVAL_BASH.replace("__COMMIT__", a.commit)
         .replace("__CONFIG__", a.config)
         .replace("__SHARD_ARGS__", shard_args)
         .replace("__SUFFIX__", f"shard{a.shard_idx}")
+        .replace("__HELD_OUT__", held_out)
     )
     print(bash)
 
